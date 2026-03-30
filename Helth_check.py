@@ -106,11 +106,10 @@ def check_cluster_info():
 def check_nodes():
     """
     Checks node health and uptime.
-    Uses only safe, universally supported fields:
-      - name, state, uptime (seconds since boot)
-      - membership: cluster membership status
-    NOTE: 'health' is NOT a valid REST field for /cluster/nodes —
-    we derive health from state == 'online' and membership == 'available'.
+    ONTAP REST /cluster/nodes valid healthy values:
+      - state      : 'up'     (not 'online' — that was the bug)
+      - membership : 'member' (not 'available' — that was the bug)
+    Both must be true for a node to be considered healthy.
     """
     section("2. NODE HEALTH")
     data = api_get("/cluster/nodes", params={"fields": "name,state,uptime,membership"})
@@ -128,8 +127,8 @@ def check_nodes():
         uptime_days  = uptime_sec // 86400
         uptime_hours = (uptime_sec % 86400) // 3600
 
-        # A node is healthy only if state=online AND membership=available
-        is_healthy = (state == "online" and membership == "available")
+        # CORRECT ONTAP REST values: state='up', membership='member'
+        is_healthy = (state == "up" and membership == "member")
         status     = PASS if is_healthy else FAIL
 
         if not is_healthy:
@@ -304,49 +303,50 @@ def check_network_interfaces():
 def check_cluster_alerts():
     """
     Checks for active EMS alerts (error/alert/critical/emergency).
-    ONTAP REST /support/ems/messages does NOT support 'severity' or
-    'order_by' as query params in all versions — causes 400 Bad Request.
-    Safe approach: fetch recent records with only supported params,
-    then filter and sort entirely in Python.
+
+    Root cause of 400 error: 'message' and 'node' are NOT valid
+    field names for /support/ems/messages in ONTAP REST.
+    Valid fields: time, severity, log_message, index.
+    All filtering and sorting is done in Python — never passed as
+    query params — to avoid version-specific 400 errors.
     """
     section("8. EMS / CLUSTER ALERTS")
 
-    # Only use universally safe params: fields and max_records
+    # ONLY use verified valid fields for /support/ems/messages
     data = api_get("/support/ems/messages", params={
-        "fields":      "time,severity,message,node",
-        "max_records": 50          # fetch recent 50, filter below
+        "fields":      "time,severity,log_message,index",
+        "max_records": 50
     })
 
     if not data or not data.get("records"):
         print(f"  {PASS} No EMS messages returned or EMS not configured.")
         return
 
-    # ── Filter in Python — no risk of 400 from unsupported query params ──
+    # ── Filter by severity in Python ──────────────────────────────────────
     CRITICAL_LEVELS = {"error", "alert", "critical", "emergency"}
     alerts = [
         msg for msg in data["records"]
         if msg.get("severity", "").lower() in CRITICAL_LEVELS
     ]
 
-    # Sort descending by time (ISO 8601 strings sort correctly as strings)
+    # Sort by time descending (ISO 8601 strings sort correctly as-is)
     alerts.sort(key=lambda x: x.get("time", ""), reverse=True)
-    alerts = alerts[:10]   # show max 10 most recent
+    alerts = alerts[:10]
 
     if not alerts:
         print(f"  {PASS} No critical EMS alerts found in the last 50 messages.")
         return
 
     print(f"  {WARN} {len(alerts)} critical EMS alert(s) found:\n")
-    print(f"  {'Time':<26} {'Severity':<12} {'Node':<20} {'Message'}")
-    print(f"  {'-'*95}")
+    print(f"  {'Time':<26} {'Severity':<12} {'Message'}")
+    print(f"  {'-'*90}")
 
     for msg in alerts:
-        time_str = msg.get("time", "N/A")
-        severity = msg.get("severity", "N/A")
-        node     = msg.get("node", {}).get("name", "N/A") if isinstance(msg.get("node"), dict) else "N/A"
-        message  = msg.get("message", {}).get("name", "N/A") if isinstance(msg.get("message"), dict) else "N/A"
-        color    = RED if severity in ("critical", "emergency") else YELLOW
-        print(f"  {time_str:<26} {color}{severity:<12}{RESET} {node:<20} {message}")
+        time_str    = msg.get("time", "N/A")
+        severity    = msg.get("severity", "N/A")
+        log_message = msg.get("log_message", "N/A")
+        color       = RED if severity in ("critical", "emergency") else YELLOW
+        print(f"  {time_str:<26} {color}{severity:<12}{RESET} {log_message}")
 
 
 def print_summary(start_time: datetime):
@@ -380,4 +380,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
