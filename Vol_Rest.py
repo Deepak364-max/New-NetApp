@@ -1,6 +1,7 @@
 # List down all the Volumes using REST API
 import requests
 import urllib3
+import json
 
 urllib3.disable_warnings()
 
@@ -15,7 +16,7 @@ def list_vol():
      }
     response = requests.get(url,auth=(username, password),headers=header,verify=False, timeout=10)
     print(response.status_code)
-    print(response.json())
+    print(json.dumps(response.json(), indent=4))
 
 
 list_vol()
